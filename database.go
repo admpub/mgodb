@@ -3,6 +3,7 @@ package mgodb
 import (
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
+	"log"
 	"reflect"
 )
 
@@ -100,31 +101,50 @@ func (db *Database) Delete(collectionName string, id interface{}) (err error) {
 
 func (db *Database) Update(collectionName string, obj Id) (err error) {
 	db.CollectionDo(collectionName, func(rc *mgo.Collection) {
-		v := reflect.ValueOf(obj)
-		if v.Kind() == reflect.Ptr {
-			v = v.Elem()
-		}
-
-		found := reflect.New(v.Type()).Interface()
+		found := reflect.New(reflect.ValueOf(obj).Type()).Interface()
 		rc.Find(bson.M{"_id": obj.MakeId()}).One(found)
-
-		originalValue := reflect.ValueOf(found)
-		if originalValue.Kind() == reflect.Ptr {
-			originalValue = originalValue.Elem()
+		newVal := db.CopyKeepValue(obj, found)
+		if newVal == nil {
+			return
 		}
+		rc.Upsert(bson.M{"_id": obj.MakeId()}, newVal)
+	})
+	return
+}
 
+func (db *Database) CopyKeepValue(to interface{}, from interface{}) interface{} {
+	v := reflect.ValueOf(from)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	originalValue := reflect.ValueOf(to)
+	if originalValue.Kind() == reflect.Ptr {
+		originalValue = originalValue.Elem()
+	}
+	if v.Kind() == reflect.Map {
+		resultSet, ok := to.(ResultSet)
+		if !ok {
+			log.Println(v.Type().Name() + ` is not mgodb.ResultSet type!`)
+			return nil
+		}
+		for key, _ := range resultSet {
+			k := reflect.ValueOf(key)
+			fieldValue := v.MapIndex(k)
+			if !reflect.DeepEqual(fieldValue.Interface(), reflect.Zero(fieldValue.Type()).Interface()) {
+				continue
+			}
+			fieldValue.Set(originalValue.MapIndex(k))
+		}
+	} else {
 		for i := 0; i < v.NumField(); i++ {
 			fieldValue := v.Field(i)
 			if !reflect.DeepEqual(fieldValue.Interface(), reflect.Zero(fieldValue.Type()).Interface()) {
 				continue
 			}
-
 			fieldValue.Set(originalValue.Field(i))
 		}
-
-		rc.Upsert(bson.M{"_id": obj.MakeId()}, v.Interface())
-	})
-	return
+	}
+	return v.Interface()
 }
 
 func (db *Database) FindAll(collectionName string, query interface{}, result interface{}) (err error) {
